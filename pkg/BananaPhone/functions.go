@@ -1,9 +1,26 @@
 package bananaphone
 
 import (
-	"unsafe"
 	"fmt"
+	"sync"
+	"unsafe"
 )
+
+// Global BananaPhone instance for standalone functions
+var (
+	globalBP     *BananaPhone
+	globalBPErr  error
+	globalBPOnce sync.Once
+)
+
+// getGlobalBananaPhone returns the global BananaPhone instance, initializing it if necessary.
+// Uses sync.Once to ensure thread-safe lazy initialization.
+func getGlobalBananaPhone() (*BananaPhone, error) {
+	globalBPOnce.Do(func() {
+		globalBP, globalBPErr = NewBananaPhone(AutoBananaPhoneMode)
+	})
+	return globalBP, globalBPErr
+}
 
 //Syscall calls the system function specified by callid with n arguments. Works much the same as syscall.Syscall - return value is the call error code and optional error text. All args are uintptrs to make it easy.
 func Syscall(callid uint16, argh ...uintptr) (errcode uint32, err error) {
@@ -87,4 +104,57 @@ func WriteMemory(inbuf []byte, destination uintptr) {
 		v := (*byte)(writePtr)
 		*v = inbuf[index]
 	}
+}
+
+// Protect changes the memory protection flags for a region of memory using NtProtectVirtualMemory.
+// This function bypasses standard Windows API calls to avoid detection by AV/EDR systems.
+//
+// Parameters:
+//   - hProcess: Handle to the process whose memory protection is to be changed
+//   - baseAddr: Base address of the memory region to protect
+//   - size: Size of the memory region in bytes
+//   - newProtect: New protection flags (e.g., PAGE_READWRITE, PAGE_EXECUTE_READ)
+//   - oldProtect: Pointer to receive the previous protection flags
+//
+// Returns:
+//   - error: nil on success, error with details on failure
+//
+// Example:
+//   var oldProtect uint32
+//   err := bananaphone.Protect(hProcess, baseAddr, size, windows.PAGE_EXECUTE_READ, &oldProtect)
+func Protect(hProcess uintptr, baseAddr uintptr, size uintptr, newProtect uint32, oldProtect *uint32) error {
+	// Get or initialize the global BananaPhone instance
+	bp, err := getGlobalBananaPhone()
+	if err != nil {
+		return fmt.Errorf("failed to initialize BananaPhone: %w", err)
+	}
+
+	// Resolve NtProtectVirtualMemory syscall ID
+	protectSysID, err := bp.GetSysID("NtProtectVirtualMemory")
+	if err != nil {
+		return fmt.Errorf("failed to resolve NtProtectVirtualMemory: %w", err)
+	}
+
+	// Call NtProtectVirtualMemory
+	// NTSTATUS NtProtectVirtualMemory(
+	//   HANDLE ProcessHandle,
+	//   PVOID *BaseAddress,
+	//   PSIZE_T RegionSize,
+	//   ULONG NewProtect,
+	//   PULONG OldProtect
+	// )
+	errcode, err := Syscall(
+		protectSysID,
+		hProcess,
+		uintptr(unsafe.Pointer(&baseAddr)),
+		uintptr(unsafe.Pointer(&size)),
+		uintptr(newProtect),
+		uintptr(unsafe.Pointer(oldProtect)),
+	)
+
+	if errcode != 0 {
+		return fmt.Errorf("NtProtectVirtualMemory failed with status: 0x%x", errcode)
+	}
+
+	return nil
 }
